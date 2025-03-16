@@ -1,0 +1,284 @@
+---
+title: "Principal Component Analysis - Funny Money"
+author: "Marie Daras LLC"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+knitr::include_graphics("mariedaras.png")
+```
+
+
+![](funnymoney.png)
+
+We are going to explore dimension reduction What is "dimension reduction?"
+
+In short, many datasets, particularly with BIG DATA, are messy. They often contain numerous independent/predictor variables for the dependant variable. To make sense of this data, how does one reduce the data to what are the most important predictors, both quantitatively and qualitatively - those that have the strongest correlation and make the most business sense?
+
+We could just eliminate features however we will be extracting features
+
+In essence, principal component analysis transforms the original variables into a set of new, uncorrelated variables
+
+This is our Principal Component Analysis - PCA
+
+There are three assumptions underlying PCA
+
+
+1) Existence of an identity matrix
+2) Sampling adequacy or an appropriate number of observations to the number of variables
+3) Independent variables are correlated to each other
+4) We are going to use the "Fake Bills" Dataset
+
+
+The columns are as follows:
+-length, the length of the banknote in mm###
+-height left, the height of the left side of the banknote in mm
+-height right, the height of the right side of the bank note in mm
+-diagonal, the diagonal of the bank note in mm
+-margin low, lower side margin in mm
+-margin up, upper side margin in mm
+-is_genuine
+
+In this dataset, the DV/dependent variable is "Is Geniune" - meaning that the bill is not fake. We are going to be reducing the set of variables to the ones which hold the most information
+
+# Install the libraries below to conduct PCA
+```{r, warning=FALSE, message=FALSE}
+library(corrr)
+library(ggcorrplot)
+library(corrplot)
+library(FactoMineR)
+library(psych)
+library(dplyr)
+library(factoextra)
+library(repr)
+
+```
+
+
+## Bringing the data
+```{r, message=FALSE, warning=FALSE}
+
+df <- read.csv("/cloud/project/fakebills.csv", header=TRUE, stringsAsFactors=FALSE)
+
+head(df,3)
+
+```
+
+
+Before conducting the PCA we remove the Dependent Variable DV "is_geniune" from the dataset, or it becomes a factor to explain itself in the dataset which is created.
+
+```{r, message=FALSE, warning=FALSE}
+
+df <- df[,-1]
+
+```
+
+
+# EDA's
+
+We'll run some quick summary statistics on the dataset before we dive into PCA
+
+```{r, warning=FALSE, message=FALSE}
+
+summary(df)
+
+```
+
+ We are also going to look at the data type.  PCA only works with numerical data
+ 
+```{r, message=FALSE, warning=FALSE}
+
+str(df)
+
+```
+ 
+
+Now let's talk about the five basic steps of Principal Component Analysis (PCA)
+
+Remember that the goal of PCA is to measure the contribution of each variable - it is the measurement of highly dimensional data and capturing the most important information from it
+
+# PCA Roadmap:
+
+1) Data Normalization - because many variables within a dataset could be on different scales, to equally measure their contribution within a dataset, they must be normalized or put on the same scale. For example if you are looking at salary and job satisfaction scores, those will be on different scales and must be normalized to measure their respective contributions within a dataset
+
+2) Covariance Matrix - a covariance matrix between the normalized data is computed
+
+3) Eigenvectors and Eigenvalues - To have a basic understanding of PCA, it helps to understand that the data is in relationship to each other in 3-dimensional space. The relationship between variables is not on a flat plane. So an Eigenvector represents a direction, such as vertical or 90 degrees. And an eigenvalue represents the amount of variance for the given direction. Each eigenvector has an eigenvalue. In Step 3 we compute the eigenvalues and eigenvectors to identify the principal components
+
+4) Selecting principal components. We do this based upon the variation in the principal components and Scree Plots.
+
+5) Data transformation according to the new principal components - so that the data is now along the lines of the new principal components axes.
+
+
+We are going to check for missing because missing data when we normalize it will bias results. The colSums() function combined with is.na() retuns the number of missing values in each column
+
+
+```{r, message=FALSE, warning=FALSE}
+
+colSums(is.na(df))
+count(df)
+
+```
+
+Because there are 37 observations that are missing in the "margin_low" column, we are going to delete those rows.
+
+
+For PCA in this instance, imputation would not be appropriate
+
+Running the count function from dplyr tells us that we still have 1463 observations
+
+```{r, message=FALSE, warning=FALSE}
+df <- na.omit(df)
+count(df)
+
+```
+# Normalization
+
+In our next step we are putting all variables on the same scale through normalization
+
+```{r, message=FALSE, warning=FALSE}
+
+data_normalized <- scale(df)
+head(data_normalized)
+
+```
+
+# Calculating a correlation matrix
+
+```{r, message=FALSE, warning=FALSE}
+
+corr_matrix <- cor(data_normalized)
+corr_matrix
+
+```
+
+What we can see is that the most highly correlated variables include margin_low to length (negatively) and margin_up to length (also negatively), as well as height_left to length (mildly, negatively). and length to height_right (negative)
+
+# Visualiztion of the correlation matrix
+
+```{r, warning=FALSE,message=FALSE}
+
+library(repr)
+options(repr.plot.width=12, repr.plot.height=12)
+library(corrplot)
+corrplot(corr_matrix, method = 'square', order = 'FPC', type = 'lower', diag = FALSE)
+
+``` 
+
+
+# Bartlett's Test for Sphericity
+
+To test for the first assumption, we perform Bartlett’s Test for Sphericity.##
+The null hypothesis for Bartlett's is that there is no collinearity between the variables, which would render PCA impossible as it depends on correlation between the variables.##
+Our significance level will be p>.05
+
+```{r, message=FALSE, warning=FALSE}
+
+cortest.bartlett(corr_matrix, n = nrow(data_normalized))
+
+```
+We can reject the null and proceed
+
+# Kaiser-Meyer-Olkin (KMO)
+
+Now we will check to see if we have an adequate sample to run PCA using the Kaiser-Meyer-Olkin (KMO)
+
+We calculate this from a function called from the psych library
+
+Generally KMO's above .80 and above are considered more than adequate sampling
+Another rule of thumb is 20 obs per every var, which we more than meet
+
+```{r, warning=FALSE, message=FALSE}
+
+library(psych)
+KMO(data_normalized)
+
+```
+
+# Applying Our PCA
+
+```{r, message=FALSE, warning=FALSE}
+
+data.pca <- princomp(corr_matrix)
+summary(data.pca)
+
+```
+We can see that effectively, 5 principal components have been generated. The first component, looking at the Cumulative Proportion row, explains 78% of the total variance. Component 2, explains 9.67% more of the total variance and Component 3 explains almost an additional 7.58%. This means that the first component represents the majority of the data, then the second, and then the rest contribute less and less.
+
+# Examine the Loadings
+```{r, warning=FALSE, message=FALSE}
+
+data.pca$loadings[, 1:4]
+
+```
+
+The loading matrix shows that the first principal component has high value for length, but a high negative value for margin_low and high negative height_right.. This indicates that suggests that bills with longer length, overall will have a lower margin and lower height on the right.
+
+The second principal component has only one component which is very high and positive, indicating those with a high diagnoal.
+
+The third component shows a high, negative loading for height on the left side of the bill related to positive low height on the right side.
+
+The last component,4, shows a high reading for height on the right side and a high negative margin_up.
+
+Remember that these readings/components are predictors of is_geniune for bills
+
+#Visualizations
+
+Now we will conduct a couple of visualizations to help gain insight into the components
+
+## Scree plot
+
+The first is a scree plot. This plot shows the eigenvalues in a downward curve, from highest to lowest. The first component can be considered to be the most significant since it contains 78% of the total information of the data. After that the increase in amount of information contributed by remaining components decreases steeply
+
+```{r, message=FALSE, warning=FALSE}
+library(repr)
+options(repr.plot.width=14, repr.plot.height=14)
+fviz_eig(data.pca, addlabels = TRUE)
+
+```
+
+
+## Biplot
+
+Biplot of the attributes
+
+With the biplot, we visualize the similarities and dissimilarities between the variables, and demonstrate the impact of each attribute on each of the principal components.
+
+```{r, warning=FALSE, message=FALSE}
+library(repr)
+options(repr.plot.width=14, repr.plot.height=14)
+fviz_pca_var(data.pca, col.var = "purple")
+
+```
+
+
+First, all the variables that are grouped together are positively correlated to each other, such as margin_low, margin_up, and height_right.
+
+Then, variables that are negatively correlated are displayed to the opposite sides of the biplot’s origin
+
+# Contribution of Each Variable
+
+In this next visualization we are determining how much each variable is represented in a given component. Such a quality of representation is called the Cos2 and corresponds to the square cosine, and it is computed using the fviz_cos2 function.
+
+A low value means that the variable is not perfectly represented by that component. A high value, on the other hand, means a good representation of the variable on that component
+
+```{r, message=FALSE, warning=FALSE}
+
+library(repr)
+options(repr.plot.width=14, repr.plot.height=14)
+fviz_cos2(data.pca, choice = "var", axes = 1:2)
+```
+
+
+From the illustration above,length and margin_low are the variables with the highest cos2, hence contributing the most to PC1 and PC2.
