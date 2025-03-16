@@ -1,0 +1,649 @@
+---
+title: "Breakfast At Tiffany's - 
+Movie Recommendation Engine: 
+The Golden Age of Movies: 
+Market Basket Analysis"
+author: "Marie Daras LLC - https://www.mariedaras.com/"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r setup, warning=FALSE, message=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+knitr::include_graphics("mariedaras.png")
+```
+
+We are going to be building a movie customer recommendation using the Rotten Tomatoes dataset - Market Basket Analysis - Apriori
+
+
+![](audrey.png)
+
+
+
+# Our Roadmap
+
+
+![](Roadmap.png)
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr) # for data manipulation
+library(stringr) # for data manipulation
+library(caret) # for sampling
+library(caTools) # for train/test split
+library(ggplot2) # for data visualization
+library(corrplot) # for correlations
+library(Rtsne) # for tsne plotting
+library(ggplot2)
+library(repr)
+library(RColorBrewer)
+library(factoextra)
+library(tidyr)
+library(tidyverse)
+library(arules)  ##specifically for apriori
+library(arulesViz) ##specifically for apriori
+library(lubridate)
+library(vembedr)
+library(hrbrthemes)
+library(rstatix)
+library(formattable)
+library(data.table)
+library(xlsx)
+library(arules)
+library(arulesViz)
+library(plyr)
+library(IRdisplay)
+library(plotly)
+library(stringdist)
+library(Matrix)
+
+```
+
+# Bringing in our data
+
+```{r, message=FALSE, warning=FALSE}
+
+dfmovies <- read.csv("/cloud/project/movies.csv", header=TRUE, stringsAsFactors=FALSE)
+dfratings <- read.csv("/cloud/project/ratings.csv", header=TRUE, stringsAsFactors=FALSE)
+
+```
+
+
+## Merging the dataframes into one
+
+```{r, message=FALSE, warning=FALSE}
+
+result <-merge(dfmovies, dfratings, by.x = "movieId", by.y = "movieId", all = TRUE)
+
+head(result,5)
+
+```
+
+### Print unique number of values in two columns
+
+```{r, message=FALSE, warning=FALSE}
+
+# Number of Users who rated at least one movie:
+print("Number of Unique Users")
+length(unique(result$userId))
+
+#Number of movies
+print("Number of Unique Movies")
+length(unique(result$movieId))
+
+```
+### Extracting movie year release into separate column
+### Split name column into title and year
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyr)
+df2 <- separate(data = result, col = title, into = c("Movie", "Year"), sep = "\\(" )
+
+```
+
+
+
+```{r, warning=FALSE, message=FALSE}
+
+df3 <- df2 %>% mutate(Year = as.numeric(gsub(")", "", Year)))
+
+head(df3,2)
+
+```
+
+### Convert UNIX to timestamp using LUBRIDATE
+```{r, message=FALSE, warning=FALSE}
+
+df3$timestamp <- as.POSIXct(df3$timestamp, origin = "1970-01-01")
+
+head(df3,3)
+
+```
+# Quick EDAs & Preprocessing of Data
+
+```{r, message=FALSE, warning=FALSE}
+
+summary(df3)
+
+```
+
+## Remove data with missings
+
+```{r, message=FALSE, warning=FALSE}
+
+MISSING <- is.na(df3$userId)|
+          is.na(df3$timestamp) |
+           is.na(df3$rating)|
+          is.na(df3$Year)
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+sum(MISSING)
+
+```
+
+```{r,message=FALSE,warning=FALSE}
+dfclean <- subset(df3, 
+                      subset = !MISSING)
+
+```
+
+
+## Count the number of rows left
+
+```{r, message=FALSE,warning=FALSE}
+
+nrow(dfclean)
+
+```
+
+## Look at frequency counts of ratings
+
+```{r, message=FALSE, warning=FALSE}
+
+freqrat <- table(dfclean$rating)
+
+print(freqrat)
+
+```
+
+## Looking at any extremes in UserIds to see if any users who too frequently rate might be skewing the data
+
+```{r, message=FALSE, warning=FALSE}
+
+hist(dfclean$userId,
+  xlab = "UserId",
+  main = "Histogram of UserID",
+  breaks = sqrt(nrow(df3))
+) # set number of bins
+
+```
+
+
+The userIds that are above frequency counts of 1500 frequency are the anomalies will skew the recommendating engine. We need to remove them. We are going to create a frequency table to identify these anomalies
+
+```{r, warning=FALSE, message=FALSE}
+
+frequency <- freq_table(dfclean,userId)
+
+head(frequency,5)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+largeanomaly <- frequency %>% 
+  filter(n > 1200)
+
+print(largeanomaly)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+names(largeanomaly)[names(largeanomaly) == "cat"] <- "userId"
+largeanomaly = subset(largeanomaly, select = -c(n) )
+head(largeanomaly,5)
+```
+
+```{r, warning=TRUE, message=FALSE}
+
+largeanomaly$userId<-as.integer(largeanomaly$userId)
+
+```
+
+
+## Antijoin to remove the outliers
+
+```{r, warning=TRUE, message=FALSE}
+
+
+dfclean <- dfclean %>%
+  anti_join(largeanomaly)
+#Joining with `by = join_by(userId)`
+
+```
+## Relooking at the histogram again
+```{r, message=FALSE, warning=FALSE}
+
+
+hist(dfclean$userId,
+  xlab = "UserId",
+  main = "Histogram of UserID",
+  breaks = sqrt(nrow(dfclean))
+) # set number of bins
+
+```
+
+## Range of year
+```{r, message=FALSE, warning=FALSE}
+
+range(dfclean$Year)
+
+```
+
+## Round off ratings to single digit
+```{r,warning=FALSE, message=FALSE}
+
+dfclean$rating <- round(dfclean$rating)
+
+head(dfclean$rating, 5)
+
+```
+
+## Removing the outlier "6" Year
+
+```{r, message=FALSE, warning=FALSE}
+
+out <-dfclean %>%  filter(Year=='6')
+```
+
+## Anti-join to remove it 
+
+```{r, message=FALSE, warning=FALSE}
+
+clean <- dfclean %>%
+  anti_join(out)
+
+```
+
+
+## Checking the Year range now
+
+```{r, message=FALSE, warning=FALSE}
+
+range(clean$Year)
+
+```
+We are going to save out some data for our Market Basket Analysis later
+
+```{r, message=FALSE, warning=FALSE}
+
+
+modeldata <-clean
+
+```
+
+
+Preparing data to build table and visualizations for 1960's to 1980's or "The Golden Age" of Film: removing movies with years out of range or older
+
+# Building Interactive Table
+
+```{r, warning=FALSE, message=FALSE}
+
+golden <-clean[clean$Year > 1959 &  clean$Year < 1981, ]
+range(golden$Year)
+
+```
+
+## Checking to see how many unique users and unique movies we have in our dataset
+
+## Number of Users who rated at least one movie & Number of movies
+
+```{r, message=FALSE, warning=FALSE}
+
+print("Number of Unique Users")
+length(unique(golden$userId))
+
+#Number of movies
+print("Number of Unique Movies")
+length(unique(golden$movieId))
+```
+
+## Building a custom table
+
+## Cleaning genres to first three descriptors
+
+```{r, warning=FALSE,message=FALSE}
+
+golden$new <-unlist(lapply(strsplit(golden$genres, '|', fixed = TRUE), '[', 2))
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+counts <- table(golden$new)
+barplot(counts, main="Ratings by Genre",
+   col="violet",las=2)
+
+```
+
+
+## Average ratings by Year for our Golden Years Dataset
+## Building the aggregate dataset of number of ratings per month
+
+```{r, message=FALSE, warning=FALSE}
+
+
+ratings <- aggregate(golden$rating, by = list(golden$Year), FUN = sum)
+
+head(ratings)
+
+```
+
+## Rename Columns
+
+```{r, message=FALSE, warning=FALSE}
+
+colnames(ratings)[1] <- "Year"      
+colnames(ratings)[2] <- "Count"  
+head(ratings, 5)
+
+```
+```{r}
+# Libraries
+library(ggplot2)
+library(hrbrthemes)
+
+
+```
+
+
+
+## Trend line
+
+```{r, message=FALSE, warning=FALSE}
+
+ggplot(ratings, aes(x = Year, y = Count, group = 1)) +
+  geom_line(color = "#800080",    # Color of the line
+            lwd = 1,      # Width of the line
+            linetype = 1) 
+
+```
+
+
+## Top rated movies - Aggregate movies by movie, rating, year, genre - Rename new to genre
+
+```{r, message=FALSE, warning=FALSE}
+
+names(golden)[8] <- "Genre"
+
+```
+
+
+## Sample a table where ratings are 4 and >
+```{r, message=FALSE, warning=FALSE}
+
+
+df4 <- filter(golden, rating > 3)
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+second <-aggregate(df4$rating, by = list(df4$Movie, df4$Year, df4$Genre), FUN = mean)
+
+```
+
+
+## Rename columns for our table
+```{r, warning=FALSE, message=FALSE}
+
+names(second)[1] <- "Movie"
+names(second)[2] <- "Year"
+names(second)[3] <- "Genre"
+names(second)[4] <- "Avg Rating"
+
+```
+
+
+## Avg ratings to 2 digits
+```{r, message=FALSE, warning=FALSE}
+
+second$`Avg Rating`<- round(second$`Avg Rating`, digits = 2)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+library(data.table)
+library(DT)
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+datatable(second,extensions = 'Buttons',
+options = list(dom='Bfrtip',
+buttons=c('copy', 'csv', 'excel', 'print', 'pdf')))
+
+```
+
+
+# Market Basket - Apriori Model
+
+Now let's build our Market Basket - Apriori Model
+For this we are going back to the data before we split the genres
+pulling the model data - dropping all the vars except userId and movieId
+
+
+```{r, message=FALSE, warning=FALSE}
+
+data2 = subset(modeldata, select = -c(Movie,Year,genres,rating,timestamp) ) 
+
+head(data2,5)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+dim(data2)[1]
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(arules)
+library(dplyr)
+library(reshape2)
+library(Matrix)
+library(stringr)
+library(stringdist)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+#convert rating-per-row dataframe into sparse User-Item matrix
+user_item_matrix <- as(split(data2[,"movieId"],data2[,"userId"]), "transactions")
+
+#investigate the User-Item matrix
+#transactions (rows) -> number of raters
+#items (columns) -> number of movies
+user_item_matrix
+
+```
+
+## Setting the parameters for the Apriori
+```{r, message=FALSE, warning=FALSE}
+
+
+rule_param = list(
+    supp = 0.001,
+    conf = 0.7,
+    maxlen = 2
+)
+
+```
+
+
+## Running the algorithm
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules = apriori(user_item_matrix,parameter = rule_param)
+
+```
+
+
+## Printing out the Association Rules
+
+```{r, message=FALSE, warning=FALSE}
+
+summary(assoc_rules)
+
+```
+
+
+Because there are so many rules we are going to only chose those whose lift have exceeded the 75th percentile, or in this case >= 86.286
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules = subset(assoc_rules, lift >= 86.286)
+
+summary(assoc_rules)
+
+```
+
+
+## Putting our association rules into a dataframe
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules = as(assoc_rules,"data.frame")
+
+head(assoc_rules)
+
+```
+
+
+Now we have to break apart the rules into separate columns - or right-hand and left-hand rules so we can re-attach the movie names and make the rule-sets useful or consummable at the business level
+
+```{r, message=FALSE, warning=FALSE}
+
+rules = sapply(assoc_rules$rules,function(x){
+    x = gsub("[\\{\\}]", "", regmatches(x, gregexpr("\\{.*\\}", x))[[1]])
+    x = gsub("=>",",",x)
+    x = str_replace_all(x," ","")
+    return( x )
+})
+
+rules = as.character(rules)
+rules = str_split(rules,",")
+
+assoc_rules$lhs_movie = sapply( rules, "[[", 1)
+assoc_rules$rhs_movie = sapply( rules , "[[", 2)
+
+assoc_rules$rules = NULL
+rm(rules)
+gc()
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules$lhs_movie = as.numeric(assoc_rules$lhs_movie)
+assoc_rules$rhs_movie = as.numeric(assoc_rules$rhs_movie)
+
+```
+
+
+Preparing data to create a dataset to extract rules
+
+```{r,warning=FALSE, message=FALSE}
+
+movienames = subset(clean, select = -c(userId,Year,timestamp,genres,rating) ) 
+
+movienames <-unique(movienames)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules = assoc_rules %>% left_join(modeldata,by=c("lhs_movie" = "movieId") )
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules <-left_join(assoc_rules, movienames, by=c('rhs_movie'='movieId'))
+
+
+```
+
+
+## Renaming Movie Columns
+
+```{r, message=FALSE, warning=FALSE}
+
+colnames(assoc_rules)[8] <- "left.title"      
+colnames(assoc_rules)[14] <- "right.title"  
+head(assoc_rules, 5)
+
+```
+
+
+Now look at the rules we mined - we mined the top rules with the highest lift
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules %>% arrange(desc(lift)) %>% select(left.title,right.title,support,confidence,lift) %>% head()
+
+```
+
+
+We do a naive filter here. Results with a number on both sides or similar opening string is removed,
+
+```{r, warning=FALSE, message=FALSE}
+
+assoc_rules = assoc_rules %>% 
+    filter( ! (grepl("[0-9]",left.title,perl = TRUE) &  grepl("[0-9]",right.title,perl = TRUE) ) ) %>%
+    filter( ! (grepl("Lemonade",left.title,perl = TRUE) &  grepl("Lemonade",right.title,perl = TRUE) ) ) %>%
+    filter( substr( left.title,start = 1,stop = min(5,str_length(left.title),str_length(right.title)) ) != substr( right.title,start = 1,stop = min(5,str_length(left.title),str_length(right.title)) ) ) %>%
+    arrange(desc(lift))
+
+head(assoc_rules %>% select(left.title,right.title,support,confidence,lift),10)
+
+```
+
+
+Lastly, we can use association rules to recommend a potential movie. Tomb Raider is fun -- let's see what movies based we could explore based on it.
+
+```{r, message=FALSE, warning=FALSE}
+
+assoc_rules %>% 
+    filter(str_detect(left.title,"Tomb Raider") | str_detect(right.title,"Tomb Raider")) %>%
+    select(left.title,right.title,support,confidence,lift) %>%
+    head(20)
+
+
+```
+
